@@ -22,6 +22,11 @@ pub struct ProjectTerminalSettingsContent {
     ///
     /// Default: {}
     pub env: Option<HashMap<String, String>>,
+    /// Whether to forward the captured project directory environment to remote terminals.
+    /// Disabling this does not affect variables set by `terminal.env` or Zed's terminal variables.
+    ///
+    /// Default: true
+    pub remote_terminal_environment: Option<bool>,
     /// Activates the python virtual environment, if one is found, in the
     /// terminal's working directory (as resolved by the working_directory
     /// setting). Set this to "off" to disable this behavior.

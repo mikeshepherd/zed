@@ -29,6 +29,7 @@ pub struct TerminalSettings {
     pub font_weight: Option<FontWeight>,
     pub line_height: TerminalLineHeight,
     pub env: HashMap<String, String>,
+    pub remote_terminal_environment: bool,
     pub cursor_shape: CursorShape,
     pub blinking: TerminalBlink,
     pub alternate_scroll: AlternateScroll,
@@ -101,6 +102,7 @@ impl settings::Settings for TerminalSettings {
             font_weight: user_content.font_weight.map(|w| w.into_gpui()),
             line_height: user_content.line_height.unwrap(),
             env: project_content.env.unwrap(),
+            remote_terminal_environment: project_content.remote_terminal_environment.unwrap(),
             cursor_shape: user_content.cursor_shape.unwrap().into(),
             blinking: user_content.blinking.unwrap(),
             alternate_scroll: user_content.alternate_scroll.unwrap(),
@@ -181,6 +183,46 @@ mod tests {
                 path: rel_path(path),
             }))
             .path_hyperlink_regexes
+    }
+
+    #[gpui::test]
+    fn test_remote_terminal_environment_setting(cx: &mut gpui::App) {
+        let mut store = SettingsStore::new(cx, &settings::default_settings());
+        assert!(
+            store
+                .get::<TerminalSettings>(None)
+                .remote_terminal_environment
+        );
+
+        store
+            .set_user_settings(
+                r#"{"terminal": {"remote_terminal_environment": false}}"#,
+                cx,
+            )
+            .expect("user terminal settings must parse");
+        assert!(
+            !store
+                .get::<TerminalSettings>(None)
+                .remote_terminal_environment
+        );
+
+        store
+            .set_local_settings(
+                WorktreeId::from_usize(1),
+                LocalSettingsPath::InWorktree(rel_path("project").into()),
+                LocalSettingsKind::Settings,
+                Some(r#"{"terminal": {"remote_terminal_environment": true}}"#),
+                cx,
+            )
+            .expect("project terminal settings must parse");
+        assert!(
+            store
+                .get::<TerminalSettings>(Some(SettingsLocation {
+                    worktree_id: WorktreeId::from_usize(1),
+                    path: rel_path("project/file"),
+                }))
+                .remote_terminal_environment
+        );
     }
 
     #[gpui::test]

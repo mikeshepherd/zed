@@ -108,8 +108,11 @@ impl Project {
         let shell_kind = ShellKind::new(&shell, path_style.is_windows());
 
         // Prepare a task for resolving the environment
-        let env_task =
-            self.resolve_directory_environment(&shell, path.clone(), remote_client.clone(), cx);
+        let env_task = if is_via_remote && !settings.remote_terminal_environment {
+            Task::ready(None).shared()
+        } else {
+            self.resolve_directory_environment(&shell, path.clone(), remote_client.clone(), cx)
+        };
 
         // Scope the toolchain lookup to the worktree the terminal is being
         // spawned in. Previously this iterated the active editor's worktree
@@ -379,8 +382,11 @@ impl Project {
         let path_style = self.path_style(cx);
 
         // Prepare a task for resolving the environment
-        let env_task =
-            self.resolve_directory_environment(&env_shell, path.clone(), remote_client.clone(), cx);
+        let env_task = if is_via_remote && !settings.remote_terminal_environment {
+            Task::ready(None).shared()
+        } else {
+            self.resolve_directory_environment(&env_shell, path.clone(), remote_client.clone(), cx)
+        };
 
         let lang_registry = self.languages.clone();
         cx.spawn(async move |project, cx| {

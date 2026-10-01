@@ -1011,6 +1011,7 @@ impl VsCodeSettings {
                 .map(|s| Shell::Program(s)),
             working_directory: None,
             env,
+            remote_terminal_environment: None,
             detect_venv: None,
             path_hyperlink_regexes: None,
             path_hyperlink_timeout_ms: None,

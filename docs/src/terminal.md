@@ -96,6 +96,18 @@ Add environment variables to all terminal sessions:
 
 > **Tip:** Use `:` to separate multiple values in a single variable: `"PATH": "/custom/path:$PATH"`
 
+For remote terminals, Zed normally forwards the environment captured in the project directory through the SSH command. If that environment makes the command too long to launch (for example, on Windows), disable forwarding:
+
+```json [settings]
+{
+  "terminal": {
+    "remote_terminal_environment": false
+  }
+}
+```
+
+The terminal will then use the environment of its new SSH session. Values in `terminal.env` and Zed's terminal variables are still passed; project-specific variables from the captured environment, such as direnv or Nix variables, may be missing.
+
 ### Python Virtual Environment Detection
 
 Zed can automatically activate Python virtual environments when opening a terminal. By default, it searches for `.env`, `env`, `.venv`, and `venv` directories:

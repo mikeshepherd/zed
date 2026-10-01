@@ -61,6 +61,19 @@
       };
     in
     {
+      devShells.rust-check = (pkgs.mkShell.override { inherit (zed-editor) stdenv; }) {
+        name = "zed-rust-check";
+        inputsFrom = [ zed-editor ];
+        packages = [ rustToolchain ];
+        env = (removeAttrs baseEnv [
+          "LK_CUSTOM_WEBRTC"
+          "CARGO_PROFILE"
+          "TARGET_DIR"
+        ]) // {
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+        };
+      };
+
       devShells.default = (pkgs.mkShell.override { inherit (zed-editor) stdenv; }) {
         name = "zed-editor-dev";
         inputsFrom = [ zed-editor ];
