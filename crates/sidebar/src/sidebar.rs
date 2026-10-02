@@ -66,10 +66,10 @@ use unicode_segmentation::UnicodeSegmentation as _;
 use util::ResultExt as _;
 use util::path_list::PathList;
 use workspace::{
-    CloseWindow, FocusWorkspaceSidebar, MoveProjectDown, MoveProjectUp, MultiWorkspace,
-    MultiWorkspaceEvent, NextProject, NextThread, Open, OpenMode, PreviousProject, PreviousThread,
-    ProjectGroupKey, RemovalIntent, SaveIntent, Sidebar as WorkspaceSidebar, SidebarSide, Toast,
-    ToggleWorkspaceSidebar, Workspace, notifications::NotificationId, sidebar_side_context_menu,
+    CloseWindow, MoveProjectDown, MoveProjectUp, MultiWorkspace, MultiWorkspaceEvent, NextProject,
+    NextThread, Open, OpenMode, PreviousProject, PreviousThread, ProjectGroupKey, RemovalIntent,
+    SaveIntent, Sidebar as WorkspaceSidebar, SidebarSide, Toast, Workspace,
+    notifications::NotificationId,
 };
 
 use git_ui_core::worktree_service::{RemoteBranchName, worktree_create_targets};
@@ -1591,8 +1591,8 @@ impl Sidebar {
 
             let label = group_key.display_name(&path_detail_map);
 
-            let is_collapsed = self.is_group_collapsed(group_key, cx);
-            let should_load_threads = !is_collapsed || !query.is_empty();
+            let is_collapsed = false;
+            let should_load_threads = true;
 
             let is_active = active_workspace
                 .as_ref()
@@ -7456,60 +7456,6 @@ impl Sidebar {
         )
     }
 
-    fn render_sidebar_toggle_button(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        let on_right = AgentSettings::get_global(_cx).sidebar_side() == SidebarSide::Right;
-
-        sidebar_side_context_menu("sidebar-toggle-menu", _cx)
-            .anchor(if on_right {
-                gpui::Anchor::BottomRight
-            } else {
-                gpui::Anchor::BottomLeft
-            })
-            .attach(if on_right {
-                gpui::Anchor::TopRight
-            } else {
-                gpui::Anchor::TopLeft
-            })
-            .trigger(move |_is_active, _window, _cx| {
-                let icon = if on_right {
-                    IconName::ThreadsSidebarRightOpen
-                } else {
-                    IconName::ThreadsSidebarLeftOpen
-                };
-                IconButton::new("sidebar-close-toggle", icon)
-                    .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::element(move |_window, cx| {
-                        v_flex()
-                            .gap_1()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .justify_between()
-                                    .child(Label::new("Toggle Sidebar"))
-                                    .child(KeyBinding::for_action(&ToggleWorkspaceSidebar, cx)),
-                            )
-                            .child(
-                                h_flex()
-                                    .pt_1()
-                                    .gap_2()
-                                    .border_t_1()
-                                    .border_color(cx.theme().colors().border_variant)
-                                    .justify_between()
-                                    .child(Label::new("Focus Sidebar"))
-                                    .child(KeyBinding::for_action(&FocusWorkspaceSidebar, cx)),
-                            )
-                            .into_any_element()
-                    }))
-                    .on_click(|_, window, cx| {
-                        if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
-                            multi_workspace.update(cx, |multi_workspace, cx| {
-                                multi_workspace.close_sidebar(window, cx);
-                            });
-                        }
-                    })
-            })
-    }
-
     fn render_sidebar_bottom_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_archive = matches!(self.view, SidebarView::Archive(..));
         let on_right = self.side(cx) == SidebarSide::Right;
@@ -7520,7 +7466,6 @@ impl Sidebar {
             .when(on_right, |this| this.flex_row_reverse())
             .border_t_1()
             .border_color(cx.theme().colors().border)
-            .child(self.render_sidebar_toggle_button(cx))
             .child(
                 IconButton::new("history", IconName::Clock)
                     .icon_size(IconSize::Small)
@@ -7882,6 +7827,54 @@ impl WorkspaceSidebar for Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.toggle_thread_switcher_impl(select_last, window, cx);
+    }
+
+    fn available_threads(&self) -> Vec<(String, SharedString)> {
+        self.contents
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                if let ListEntry::Thread(thread) = entry {
+                    Some((
+                        thread.metadata.thread_id.to_key_string(),
+                        thread.metadata.display_title(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn select_thread(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let thread = self.contents.entries.iter().find_map(|entry| {
+            if let ListEntry::Thread(thread) = entry {
+                (thread.metadata.thread_id.to_key_string() == id)
+                    .then(|| (thread.metadata.clone(), thread.workspace.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((metadata, workspace)) = thread {
+            self.selection = None;
+            match workspace {
+                ThreadEntryWorkspace::Open(workspace) => {
+                    self.activate_thread(metadata, &workspace, false, window, cx);
+                }
+                ThreadEntryWorkspace::Closed {
+                    folder_paths,
+                    project_group_key,
+                } => {
+                    self.open_workspace_and_activate_thread(
+                        metadata,
+                        folder_paths,
+                        &project_group_key,
+                        window,
+                        cx,
+                    );
+                }
+            }
+        }
     }
 
     fn cycle_project(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {

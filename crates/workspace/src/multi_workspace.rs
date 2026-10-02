@@ -24,6 +24,7 @@ use settings::SidebarDockPosition;
 use ui::{ContextMenu, right_click_menu};
 
 const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
+pub const THREADS_SIDEBAR_ENABLED: bool = false;
 
 use crate::open_remote_project_with_existing_connection;
 use crate::{
@@ -138,6 +139,12 @@ pub trait Sidebar: Focusable + Render + EventEmitter<SidebarEvent> + Sized {
     ) {
     }
 
+    fn available_threads(&self) -> Vec<(String, SharedString)> {
+        Vec::new()
+    }
+
+    fn select_thread(&mut self, _id: String, _window: &mut Window, _cx: &mut Context<Self>) {}
+
     /// Activates the next or previous project.
     fn cycle_project(&mut self, _forward: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
 
@@ -170,6 +177,8 @@ pub trait SidebarHandle: 'static + Send + Sync {
     fn entity_id(&self) -> EntityId;
     fn toggle_thread_switcher(&self, select_last: bool, window: &mut Window, cx: &mut App);
     fn cycle_project(&self, forward: bool, window: &mut Window, cx: &mut App);
+    fn available_threads(&self, cx: &App) -> Vec<(String, SharedString)>;
+    fn select_thread(&self, id: String, window: &mut Window, cx: &mut App);
     fn cycle_thread(&self, forward: bool, window: &mut Window, cx: &mut App);
 
     fn is_threads_list_view_active(&self, cx: &App) -> bool;
@@ -228,6 +237,17 @@ impl<T: Sidebar> SidebarHandle for Entity<T> {
             entity.update(cx, |this, cx| {
                 this.toggle_thread_switcher(select_last, window, cx);
             });
+        });
+    }
+
+    fn available_threads(&self, cx: &App) -> Vec<(String, SharedString)> {
+        self.read(cx).available_threads()
+    }
+
+    fn select_thread(&self, id: String, window: &mut Window, cx: &mut App) {
+        let entity = self.clone();
+        window.defer(cx, move |window, cx| {
+            entity.update(cx, |this, cx| this.select_thread(id, window, cx));
         });
     }
 
@@ -428,7 +448,7 @@ impl MultiWorkspace {
     }
 
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.multi_workspace_enabled(cx) {
+        if !THREADS_SIDEBAR_ENABLED || !self.multi_workspace_enabled(cx) {
             return;
         }
 
@@ -455,7 +475,7 @@ impl MultiWorkspace {
     }
 
     pub fn focus_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.multi_workspace_enabled(cx) {
+        if !THREADS_SIDEBAR_ENABLED || !self.multi_workspace_enabled(cx) {
             return;
         }
 
@@ -485,6 +505,9 @@ impl MultiWorkspace {
     }
 
     pub fn open_sidebar(&mut self, cx: &mut Context<Self>) {
+        if !THREADS_SIDEBAR_ENABLED {
+            return;
+        }
         let side = match self.sidebar_side(cx) {
             SidebarSide::Left => "left",
             SidebarSide::Right => "right",
@@ -496,7 +519,9 @@ impl MultiWorkspace {
     /// Restores the sidebar to open state from persisted session data without
     /// firing a telemetry event, since this is not a user-initiated action.
     pub(crate) fn restore_open_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.apply_open_sidebar(cx);
+        if THREADS_SIDEBAR_ENABLED {
+            self.apply_open_sidebar(cx);
+        }
     }
 
     fn apply_open_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -1995,7 +2020,7 @@ impl MultiWorkspace {
 
 impl Render for MultiWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let multi_workspace_enabled = self.multi_workspace_enabled(cx);
+        let multi_workspace_enabled = THREADS_SIDEBAR_ENABLED && self.multi_workspace_enabled(cx);
         let sidebar_side = self.sidebar_side(cx);
         let sidebar_on_right = sidebar_side == SidebarSide::Right;
 

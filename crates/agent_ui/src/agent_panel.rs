@@ -99,7 +99,7 @@ use ui::{
 use util::ResultExt as _;
 use workspace::{
     CollaboratorId, DraggedSelection, DraggedTab, MultiWorkspace, PathList, SerializedPathList,
-    ToggleWorkspaceSidebar, ToggleZoom, ToolbarItemView, Workspace, WorkspaceId,
+    ToggleZoom, ToolbarItemView, Workspace, WorkspaceId,
     dock::{DockPosition, Panel, PanelEvent},
     item::{ItemEvent, ItemHandle},
 };
@@ -5812,10 +5812,7 @@ impl AgentPanel {
                                 .action("Profiles", Box::new(ManageProfiles::default()));
                         }
 
-                        menu = menu
-                            .action("Settings", Box::new(OpenSettings))
-                            .separator()
-                            .action("Toggle Threads Sidebar", Box::new(ToggleWorkspaceSidebar));
+                        menu = menu.action("Settings", Box::new(OpenSettings));
 
                         if has_auth_methods || supports_logout {
                             menu = menu.separator()
@@ -6189,6 +6186,38 @@ impl AgentPanel {
                 .with_handle(self.new_thread_menu_handle.clone())
                 .menu(move |window, cx| new_thread_menu_builder(window, cx));
 
+            let thread_switcher = PopoverMenu::new("agent-thread-switcher")
+                .trigger(
+                    Button::new("agent-thread-switcher-button", "Threads")
+                        .size(ButtonSize::None)
+                        .label_size(LabelSize::Small),
+                )
+                .anchor(Anchor::TopRight)
+                .menu(|window, cx| {
+                    let multi_workspace = window.root::<MultiWorkspace>().flatten()?;
+                    let threads = multi_workspace.read(cx).sidebar()?.available_threads(cx);
+                    Some(ContextMenu::build(window, cx, |menu, _, _| {
+                        threads.into_iter().fold(menu, |menu, (id, title)| {
+                            let mut characters = title.chars();
+                            let mut truncated: String = characters.by_ref().take(60).collect();
+                            if characters.next().is_some() {
+                                truncated = title.chars().take(57).collect();
+                                truncated.push_str("...");
+                            }
+                            menu.item(ContextMenuEntry::new(truncated).handler({
+                                let multi_workspace = multi_workspace.clone();
+                                move |window, cx| {
+                                    multi_workspace.update(cx, |multi_workspace, cx| {
+                                        if let Some(sidebar) = multi_workspace.sidebar() {
+                                            sidebar.select_thread(id.clone(), window, cx);
+                                        }
+                                    });
+                                }
+                            }))
+                        })
+                    }))
+                });
+
             let sandbox_status = self
                 .active_conversation_view()
                 .and_then(|conversation_view| conversation_view.read(cx).root_thread_view())
@@ -6219,6 +6248,7 @@ impl AgentPanel {
                         .flex_none()
                         .gap_1()
                         .children(sandbox_status)
+                        .child(thread_switcher)
                         .when(can_create_entries, |this| this.child(new_thread_menu))
                         .child(full_screen_button)
                         .child(self.render_panel_options_menu(window, cx)),
