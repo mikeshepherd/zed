@@ -141,6 +141,15 @@ pub async fn open_remote_project(
         cx,
     )
     .await;
+    log::debug!(
+        "Open remote project: requesting_window={:?} matched_window={:?}",
+        open_options
+            .requesting_window
+            .map(|window| window.window_id().as_u64()),
+        existing
+            .as_ref()
+            .map(|(window, _)| window.window_id().as_u64()),
+    );
 
     if let Some((existing_window, existing_workspace)) = existing {
         let remote_connection = cx.update(|cx| {
@@ -191,6 +200,10 @@ pub async fn open_remote_project(
                 .map(|r| r.and_then(|r| r.ok()))
                 .collect::<Vec<_>>();
             navigate_to_positions(&existing_window, items, &paths_with_positions, cx);
+            log::debug!(
+                "Open remote project: reusing matched window={}",
+                existing_window.window_id().as_u64(),
+            );
 
             return Ok(existing_window);
         }
@@ -244,6 +257,10 @@ pub async fn open_remote_project(
         })?;
         (window, workspace)
     };
+    log::debug!(
+        "Open remote project: connecting in window={} newly_created={created_new_window}",
+        window.window_id().as_u64(),
+    );
 
     loop {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
@@ -501,7 +518,7 @@ mod tests {
     use super::*;
     use extension::ExtensionHostProxy;
     use fs::FakeFs;
-    use gpui::{AppContext, TestAppContext};
+    use gpui::{Action, AppContext, TestAppContext};
     use http_client::BlockedHttpClient;
     use node_runtime::NodeRuntime;
     use remote::RemoteClient;
@@ -715,6 +732,257 @@ mod tests {
             still_first_window, first_window,
             "The window handle should be the same after reuse"
         );
+    }
+
+    async fn init_sibling_remote_projects(
+        cx: &mut TestAppContext,
+        server_cx: &mut TestAppContext,
+    ) -> (
+        Arc<AppState>,
+        RemoteConnectionOptions,
+        gpui::Entity<HeadlessProject>,
+    ) {
+        let app_state = init_test(cx);
+        cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+        server_cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+
+        let (connection, server_session, connect_guard) = RemoteClient::fake_server(cx, server_cx);
+        let remote_fs = FakeFs::new(server_cx.executor());
+        remote_fs
+            .insert_tree(
+                path!("/projects"),
+                json!({
+                    "zed": { "src": { "main.rs": "fn main() {}" } },
+                    "pi-acp-rust": { "src": { "main.rs": "fn main() {}" } },
+                }),
+            )
+            .await;
+
+        server_cx.update(HeadlessProject::init);
+        let executor = server_cx.executor();
+        let headless = server_cx.new(|cx| {
+            HeadlessProject::new(
+                HeadlessAppState {
+                    session: server_session,
+                    fs: remote_fs,
+                    http_client: Arc::new(BlockedHttpClient),
+                    node_runtime: NodeRuntime::unavailable(),
+                    languages: Arc::new(language::LanguageRegistry::new(executor)),
+                    extension_host_proxy: Arc::new(ExtensionHostProxy::new()),
+                    startup_time: std::time::Instant::now(),
+                },
+                false,
+                cx,
+            )
+        });
+        drop(connect_guard);
+        (app_state, connection, headless)
+    }
+
+    #[gpui::test]
+    async fn test_sibling_remote_project_does_not_match_existing_workspace(
+        cx: &mut TestAppContext,
+        server_cx: &mut TestAppContext,
+    ) {
+        let (app_state, connection, _headless) = init_sibling_remote_projects(cx, server_cx).await;
+        let executor = cx.executor();
+        let mut async_cx = cx.to_async();
+        let original_window = open_remote_project(
+            connection.clone(),
+            vec![PathBuf::from(path!("/projects/zed"))],
+            app_state.clone(),
+            OpenOptions::default(),
+            &mut async_cx,
+        )
+        .await
+        .expect("opening the original remote project should succeed");
+        executor.run_until_parked();
+
+        let empty_window = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    Vec::new(),
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    workspace::OpenMode::NewWindow,
+                    cx,
+                )
+            })
+            .await
+            .expect("opening an empty window should succeed")
+            .window;
+        assert_ne!(original_window, empty_window);
+
+        let sibling_path = PathBuf::from(path!("/projects/pi-acp-rust"));
+        let (existing, _) = find_existing_workspace(
+            &[sibling_path.clone()],
+            &OpenOptions::default(),
+            &SerializedWorkspaceLocation::Remote(connection.clone()),
+            &mut async_cx,
+        )
+        .await;
+        assert!(
+            existing.is_none(),
+            "a sibling project must not match the original workspace"
+        );
+        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+        original_window
+            .read_with(cx, |multi_workspace, cx| {
+                let project = multi_workspace.workspace().read(cx).project().read(cx);
+                assert_eq!(
+                    project.visibility_for_paths(
+                        &[PathBuf::from(path!("/projects/zed"))],
+                        true,
+                        cx
+                    ),
+                    Some(true),
+                );
+                assert_eq!(
+                    project.visibility_for_paths(&[sibling_path.clone()], true, cx),
+                    None
+                );
+            })
+            .expect("original window should still exist");
+        empty_window
+            .read_with(cx, |multi_workspace, cx| {
+                let project = multi_workspace.workspace().read(cx).project().read(cx);
+                assert!(!project.is_remote());
+                assert_eq!(
+                    project.visibility_for_paths(&[sibling_path], true, cx),
+                    None
+                );
+            })
+            .expect("empty window should still exist");
+    }
+
+    #[gpui::test]
+    async fn test_open_recent_from_empty_window_with_existing_remote_project(
+        cx: &mut TestAppContext,
+        server_cx: &mut TestAppContext,
+    ) {
+        let (app_state, connection, _headless) = init_sibling_remote_projects(cx, server_cx).await;
+        let mut async_cx = cx.to_async();
+        let original_window = open_remote_project(
+            connection,
+            vec![PathBuf::from(path!("/projects/zed"))],
+            app_state.clone(),
+            OpenOptions::default(),
+            &mut async_cx,
+        )
+        .await
+        .expect("remote project should open");
+        let empty_window = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    Vec::new(),
+                    app_state,
+                    None,
+                    None,
+                    None,
+                    workspace::OpenMode::NewWindow,
+                    cx,
+                )
+            })
+            .await
+            .expect("empty window should open")
+            .window;
+
+        empty_window
+            .update(cx, |_, window, cx| {
+                window.activate_window();
+                window.dispatch_action(zed_actions::OpenRecent::default().boxed_clone(), cx);
+            })
+            .expect("empty window should accept Open Recent");
+        cx.run_until_parked();
+
+        original_window
+            .read_with(cx, |multi_workspace, cx| {
+                assert!(
+                    multi_workspace
+                        .workspace()
+                        .read(cx)
+                        .active_modal::<crate::RecentProjects>(cx)
+                        .is_none()
+                );
+            })
+            .expect("original window should still exist");
+        empty_window
+            .read_with(cx, |multi_workspace, cx| {
+                assert!(
+                    multi_workspace
+                        .workspace()
+                        .read(cx)
+                        .active_modal::<crate::RecentProjects>(cx)
+                        .is_some()
+                );
+            })
+            .expect("empty window should still exist");
+    }
+
+    #[gpui::test]
+    async fn test_remote_open_prefers_matching_workspace_over_requested_window(
+        cx: &mut TestAppContext,
+        server_cx: &mut TestAppContext,
+    ) {
+        let (app_state, connection, _headless) = init_sibling_remote_projects(cx, server_cx).await;
+        let executor = cx.executor();
+        let path = PathBuf::from(path!("/projects/zed"));
+        let mut async_cx = cx.to_async();
+        let original_window = open_remote_project(
+            connection.clone(),
+            vec![path.clone()],
+            app_state.clone(),
+            OpenOptions::default(),
+            &mut async_cx,
+        )
+        .await
+        .expect("opening the original remote project should succeed");
+        executor.run_until_parked();
+        let empty_window = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    Vec::new(),
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    workspace::OpenMode::NewWindow,
+                    cx,
+                )
+            })
+            .await
+            .expect("opening an empty window should succeed")
+            .window;
+
+        let (existing, _) = find_existing_workspace(
+            &[path.clone()],
+            &OpenOptions::default(),
+            &SerializedWorkspaceLocation::Remote(connection.clone()),
+            &mut async_cx,
+        )
+        .await;
+        assert_eq!(existing.map(|(window, _)| window), Some(original_window));
+
+        let opened_window = open_remote_project(
+            connection,
+            vec![path],
+            app_state,
+            OpenOptions {
+                requesting_window: Some(empty_window),
+                ..Default::default()
+            },
+            &mut async_cx,
+        )
+        .await
+        .expect("reopening the original remote project should succeed");
+        assert_eq!(opened_window, original_window);
+        assert_ne!(opened_window, empty_window);
     }
 
     #[gpui::test]

@@ -2204,6 +2204,11 @@ impl RecentProjectsDelegate {
                             .fill_connection_options_from_settings(connection);
                     };
                     let paths = candidate_workspace_paths.paths().to_vec();
+                    log::debug!(
+                        "Open Recent remote: workspace_id={candidate_workspace_id:?} picker_window={} requesting_window={:?}",
+                        window.window_handle().window_id().as_u64(),
+                        replace_window.map(|window| window.window_id().as_u64()),
+                    );
                     cx.spawn_in(window, async move |_, cx| {
                         open_remote_project(connection.clone(), paths, app_state, open_options, cx)
                             .await
@@ -3094,6 +3099,83 @@ mod tests {
             editor::init(cx);
             state
         })
+    }
+
+    #[gpui::test]
+    async fn test_open_recent_from_empty_window_attaches_picker_to_that_window(
+        cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/original"), json!({ "file.txt": "" }))
+            .await;
+
+        let original_window = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    vec![PathBuf::from(path!("/original"))],
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    workspace::OpenMode::NewWindow,
+                    cx,
+                )
+            })
+            .await
+            .expect("original window should open")
+            .window;
+        let empty_window = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    Vec::new(),
+                    app_state,
+                    None,
+                    None,
+                    None,
+                    workspace::OpenMode::NewWindow,
+                    cx,
+                )
+            })
+            .await
+            .expect("empty window should open")
+            .window;
+        assert_ne!(original_window, empty_window);
+
+        empty_window
+            .update(cx, |_, window, cx| {
+                window.activate_window();
+                window.dispatch_action(zed_actions::OpenRecent::default().boxed_clone(), cx);
+            })
+            .expect("empty window should accept Open Recent");
+        cx.run_until_parked();
+
+        original_window
+            .read_with(cx, |multi_workspace, cx| {
+                assert!(
+                    multi_workspace
+                        .workspace()
+                        .read(cx)
+                        .active_modal::<RecentProjects>(cx)
+                        .is_none()
+                );
+            })
+            .expect("original window should still exist");
+        empty_window
+            .read_with(cx, |multi_workspace, cx| {
+                let workspace = multi_workspace.workspace();
+                let picker = workspace
+                    .read(cx)
+                    .active_modal::<RecentProjects>(cx)
+                    .expect("recent projects picker should open in the empty window");
+                assert_eq!(
+                    picker.read(cx).picker.read(cx).delegate.workspace.upgrade(),
+                    Some(workspace.clone())
+                );
+            })
+            .expect("empty window should still exist");
     }
 
     #[gpui::test]
