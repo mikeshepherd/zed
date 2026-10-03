@@ -7829,12 +7829,17 @@ impl WorkspaceSidebar for Sidebar {
         self.toggle_thread_switcher_impl(select_last, window, cx);
     }
 
-    fn available_threads(&self) -> Vec<(String, SharedString)> {
+    fn available_threads(&self, cx: &App) -> Vec<(String, SharedString)> {
+        let Some(active_workspace) = self.active_workspace(cx) else {
+            return Vec::new();
+        };
         self.contents
             .entries
             .iter()
             .filter_map(|entry| {
-                if let ListEntry::Thread(thread) = entry {
+                if let ListEntry::Thread(thread) = entry
+                    && matches!(&thread.workspace, ThreadEntryWorkspace::Open(workspace) if workspace == &active_workspace)
+                {
                     Some((
                         thread.metadata.thread_id.to_key_string(),
                         thread.metadata.display_title(),
@@ -7873,6 +7878,24 @@ impl WorkspaceSidebar for Sidebar {
                         cx,
                     );
                 }
+            }
+        }
+    }
+
+    fn remove_thread(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let thread = self.contents.entries.iter().find_map(|entry| {
+            if let ListEntry::Thread(thread) = entry {
+                (thread.metadata.thread_id.to_key_string() == id)
+                    .then(|| (thread.metadata.clone(), thread.workspace.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((metadata, workspace)) = thread {
+            if let Some(session_id) = metadata.session_id {
+                self.archive_thread(&session_id, window, cx);
+            } else {
+                self.remove_draft(metadata.thread_id, &workspace, window, cx);
             }
         }
     }

@@ -36,6 +36,50 @@
         }
       );
 
+      nativeCheckDependencies = [
+        pkgs.cmake
+        pkgs.pkg-config
+      ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+        pkgs.glib
+        pkgs.alsa-lib
+        pkgs.gtk3
+      ];
+
+      # Nix's compiler wrappers repeat flags for build inputs, and the resulting
+      # linker invocation can exceed Linux's argument-size limit.
+      compactCompilerFlags = ''
+        dedup_flags() {
+          local variable=$1 result= seen=" " unit
+          set -- ''${!variable}
+          while [ "$#" -gt 0 ]; do
+            case $1 in
+              -isystem | -idirafter | -iframework | -I | -L | -rpath | -include | -Xlinker)
+                unit="$1 $2"
+                shift 2
+                ;;
+              *)
+                unit="$1"
+                shift
+                ;;
+            esac
+            case $seen in
+              *" $unit "*) continue ;;
+            esac
+            seen="$seen$unit "
+            result="''${result:+$result }$unit"
+          done
+          export "$variable=$result"
+        }
+        dedup_flags NIX_CFLAGS_COMPILE
+        dedup_flags NIX_LDFLAGS
+        unset -f dedup_flags
+        unset NIX_CFLAGS_COMPILE_FOR_BUILD NIX_LDFLAGS_FOR_BUILD NIX_CC_FOR_BUILD \
+          NIX_BINTOOLS_FOR_BUILD CC_FOR_BUILD CXX_FOR_BUILD AR_FOR_BUILD AS_FOR_BUILD \
+          LD_FOR_BUILD NM_FOR_BUILD OBJCOPY_FOR_BUILD OBJDUMP_FOR_BUILD \
+          RANLIB_FOR_BUILD READELF_FOR_BUILD SIZE_FOR_BUILD STRINGS_FOR_BUILD \
+          STRIP_FOR_BUILD
+      '';
+
       rustBin = inputs.rust-overlay.lib.mkRustBin { } pkgs;
       rustToolchain = rustBin.fromRustupToolchainFile ../../rust-toolchain.toml;
 
@@ -64,7 +108,8 @@
       devShells.rust-check = (pkgs.mkShell.override { inherit (zed-editor) stdenv; }) {
         name = "zed-rust-check";
         inputsFrom = [ zed-editor ];
-        packages = [ rustToolchain ];
+        packages = [ rustToolchain ] ++ nativeCheckDependencies;
+        shellHook = compactCompilerFlags;
         env = (removeAttrs baseEnv [
           "LK_CUSTOM_WEBRTC"
           "CARGO_PROFILE"
@@ -107,7 +152,10 @@
               ps.pygobject3
             ]))
           ]
-          ++ lib.optionals stdenv.hostPlatform.isLinux [ accerciser ];
+          ++ lib.optionals stdenv.hostPlatform.isLinux [ accerciser ]
+          ++ nativeCheckDependencies;
+
+        shellHook = compactCompilerFlags;
 
         env =
           (removeAttrs baseEnv [

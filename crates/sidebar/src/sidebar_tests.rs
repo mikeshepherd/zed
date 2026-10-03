@@ -12524,6 +12524,63 @@ async fn test_startup_successful_restoration_no_spurious_draft(cx: &mut TestAppC
 }
 
 #[gpui::test]
+async fn test_available_threads_only_in_active_workspace(cx: &mut TestAppContext) {
+    let project_a = init_test_project_with_agent_panel("/project-a", cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a.clone(), window, cx));
+    let (sidebar, panel_a) = setup_sidebar_with_agent_panel(&multi_workspace, cx);
+    let workspace_a = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    open_thread_with_connection(&panel_a, StubAgentConnection::new(), cx);
+    send_message(&panel_a, cx);
+    let session_a = active_session_id(&panel_a, cx);
+    save_test_thread_metadata(&session_a, &project_a, cx).await;
+
+    let fs = cx.update(|_window, cx| <dyn fs::Fs>::global(cx));
+    fs.as_fake()
+        .insert_tree("/project-b", serde_json::json!({ "src": {} }))
+        .await;
+    let project_b =
+        project::Project::test(fs.clone() as Arc<dyn Fs>, ["/project-b".as_ref()], cx).await;
+    let workspace_b = multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(project_b.clone(), window, cx)
+    });
+    let panel_b = add_agent_panel(&workspace_b, cx);
+
+    open_thread_with_connection(&panel_b, StubAgentConnection::new(), cx);
+    send_message(&panel_b, cx);
+    let session_b = active_session_id(&panel_b, cx);
+    save_test_thread_metadata(&session_b, &project_b, cx).await;
+    cx.run_until_parked();
+
+    let thread_a = thread_id_for(&session_a, cx).to_key_string();
+    let thread_b = thread_id_for(&session_b, cx).to_key_string();
+    let available_ids = sidebar.read_with(cx, |sidebar, cx| {
+        sidebar
+            .available_threads(cx)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    });
+    assert!(available_ids.contains(&thread_b));
+    assert!(!available_ids.contains(&thread_a));
+
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.activate(workspace_a, None, window, cx);
+    });
+    cx.run_until_parked();
+    let available_ids = sidebar.read_with(cx, |sidebar, cx| {
+        sidebar
+            .available_threads(cx)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    });
+    assert!(available_ids.contains(&thread_a));
+    assert!(!available_ids.contains(&thread_b));
+}
+
+#[gpui::test]
 async fn test_project_header_click_restores_last_viewed(cx: &mut TestAppContext) {
     // Rule 9: Clicking a project header should restore whatever the
     // user was last looking at in that group, not create new drafts

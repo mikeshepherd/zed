@@ -1133,6 +1133,7 @@ pub struct AgentPanel {
     #[cfg(test)]
     test_terminal_spawn_gate: Option<futures::channel::oneshot::Receiver<()>>,
     new_thread_menu_handle: PopoverMenuHandle<ContextMenu>,
+    thread_switcher_menu_handle: PopoverMenuHandle<ContextMenu>,
     agent_panel_menu_handle: PopoverMenuHandle<ContextMenu>,
     _extension_subscription: Option<Subscription>,
     _project_subscription: Subscription,
@@ -1554,6 +1555,7 @@ impl AgentPanel {
             #[cfg(test)]
             test_terminal_spawn_gate: None,
             new_thread_menu_handle: PopoverMenuHandle::default(),
+            thread_switcher_menu_handle: PopoverMenuHandle::default(),
             agent_panel_menu_handle: PopoverMenuHandle::default(),
 
             _extension_subscription: extension_subscription,
@@ -6193,29 +6195,78 @@ impl AgentPanel {
                         .label_size(LabelSize::Small),
                 )
                 .anchor(Anchor::TopRight)
-                .menu(|window, cx| {
-                    let multi_workspace = window.root::<MultiWorkspace>().flatten()?;
-                    let threads = multi_workspace.read(cx).sidebar()?.available_threads(cx);
-                    Some(ContextMenu::build(window, cx, |menu, _, _| {
-                        threads.into_iter().fold(menu, |menu, (id, title)| {
-                            let mut characters = title.chars();
-                            let mut truncated: String = characters.by_ref().take(60).collect();
-                            if characters.next().is_some() {
-                                truncated = title.chars().take(57).collect();
-                                truncated.push_str("...");
-                            }
-                            menu.item(ContextMenuEntry::new(truncated).handler({
-                                let multi_workspace = multi_workspace.clone();
-                                move |window, cx| {
-                                    multi_workspace.update(cx, |multi_workspace, cx| {
-                                        if let Some(sidebar) = multi_workspace.sidebar() {
-                                            sidebar.select_thread(id.clone(), window, cx);
-                                        }
-                                    });
+                .with_handle(self.thread_switcher_menu_handle.clone())
+                .menu({
+                    let menu_handle = self.thread_switcher_menu_handle.clone();
+                    move |window, cx| {
+                        let multi_workspace = window.root::<MultiWorkspace>().flatten()?;
+                        let threads = multi_workspace.read(cx).sidebar()?.available_threads(cx);
+                        Some(ContextMenu::build(window, cx, |menu, _, _| {
+                            threads.into_iter().fold(menu, |menu, (id, title)| {
+                                let mut characters = title.chars();
+                                let mut truncated: String = characters.by_ref().take(60).collect();
+                                if characters.next().is_some() {
+                                    truncated = title.chars().take(57).collect();
+                                    truncated.push_str("...");
                                 }
-                            }))
-                        })
-                    }))
+                                menu.custom_entry(
+                                    {
+                                        let multi_workspace = multi_workspace.clone();
+                                        let id = id.clone();
+                                        let menu_handle = menu_handle.clone();
+                                        move |_, _| {
+                                            h_flex()
+                                                .gap_1()
+                                                .child(
+                                                    IconButton::new(
+                                                        format!("remove-thread-{id}"),
+                                                        IconName::Trash,
+                                                    )
+                                                    .icon_size(IconSize::Small)
+                                                    .tooltip(Tooltip::text("Remove Thread"))
+                                                    .on_click({
+                                                        let multi_workspace =
+                                                            multi_workspace.clone();
+                                                        let id = id.clone();
+                                                        let menu_handle = menu_handle.clone();
+                                                        move |_, window, cx| {
+                                                            cx.stop_propagation();
+                                                            menu_handle.hide(cx);
+                                                            multi_workspace.update(
+                                                                cx,
+                                                                |multi_workspace, cx| {
+                                                                    if let Some(sidebar) =
+                                                                        multi_workspace.sidebar()
+                                                                    {
+                                                                        sidebar.remove_thread(
+                                                                            id.clone(),
+                                                                            window,
+                                                                            cx,
+                                                                        );
+                                                                    }
+                                                                },
+                                                            );
+                                                        }
+                                                    }),
+                                                )
+                                                .child(Label::new(truncated.clone()).truncate())
+                                                .into_any_element()
+                                        }
+                                    },
+                                    {
+                                        let multi_workspace = multi_workspace.clone();
+                                        move |window, cx| {
+                                            multi_workspace.update(cx, |multi_workspace, cx| {
+                                                if let Some(sidebar) = multi_workspace.sidebar() {
+                                                    sidebar.select_thread(id.clone(), window, cx);
+                                                }
+                                            });
+                                        }
+                                    },
+                                )
+                            })
+                        }))
+                    }
                 });
 
             let sandbox_status = self
