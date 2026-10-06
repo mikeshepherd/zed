@@ -1828,6 +1828,7 @@ impl AgentConnection for AcpConnection {
                             anyhow::Ok(agent.get_command(
                                 terminal.args.clone(),
                                 HashMap::from_iter(terminal.env.clone()),
+                                true,
                                 &mut cx.to_async(),
                             ))
                         })?

@@ -96,7 +96,7 @@ Add environment variables to all terminal sessions:
 
 > **Tip:** Use `:` to separate multiple values in a single variable: `"PATH": "/custom/path:$PATH"`
 
-For remote terminals, Zed normally forwards the environment captured in the project directory through the SSH command. If that environment makes the command too long to launch (for example, on Windows), disable forwarding:
+For remote commands, terminals, and agent processes, Zed normally forwards the environment captured in the project directory through the SSH command. If that environment makes the command too long to launch (for example, on Windows), disable forwarding:
 
 ```json [settings]
 {
@@ -106,7 +106,7 @@ For remote terminals, Zed normally forwards the environment captured in the proj
 }
 ```
 
-The terminal will then use the environment of its new SSH session. Values in `terminal.env` and Zed's terminal variables are still passed; project-specific variables from the captured environment, such as direnv or Nix variables, may be missing.
+Remote processes will then use the environment of their SSH session. Explicitly configured command environment values are still passed; project-specific variables from the captured environment, such as direnv or Nix variables, may be missing.
 
 ### Python Virtual Environment Detection
 

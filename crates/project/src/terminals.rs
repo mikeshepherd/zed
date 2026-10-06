@@ -573,12 +573,16 @@ impl Project {
         let builder = ShellBuilder::new(&shell, is_windows).non_interactive();
         let (command, args) = builder.build(Some(command), &Vec::new());
 
-        let env_task = self.resolve_directory_environment(
-            &shell.program(),
-            path.as_ref().map(|p| Arc::from(&**p)),
-            remote_client.clone(),
-            cx,
-        );
+        let env_task = if remote_client.is_some() && !settings.remote_terminal_environment {
+            Task::ready(None).shared()
+        } else {
+            self.resolve_directory_environment(
+                &shell.program(),
+                path.as_ref().map(|p| Arc::from(&**p)),
+                remote_client.clone(),
+                cx,
+            )
+        };
 
         cx.spawn(async move |project, cx| {
             let mut env = env_task.await.unwrap_or_default();
