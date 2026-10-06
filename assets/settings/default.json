@@ -2119,9 +2119,9 @@
     "env": {
       // "KEY": "value1:value2"
     },
-    // Forward the captured project directory environment to remote terminals.
-    // Set to false to use the remote login environment instead. Explicit
-    // terminal.env values and Zed's terminal variables are still passed.
+    // Forward the captured project directory environment to remote commands.
+    // Set to false to use the remote login environment instead. Explicit command
+    // environment variables are still passed.
     "remote_terminal_environment": true,
     // Set the terminal's line height.
     // May take 3 values:

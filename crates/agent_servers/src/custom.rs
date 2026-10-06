@@ -263,7 +263,7 @@ impl AgentServer for CustomAgentServer {
                     if let Some(loading_status_tx) = delegate.loading_status {
                         agent.set_loading_status_tx(loading_status_tx);
                     }
-                    anyhow::Ok(agent.get_command(vec![], extra_env, &mut cx.to_async()))
+                    anyhow::Ok(agent.get_command(vec![], extra_env, true, &mut cx.to_async()))
                 })??
                 .await?;
             let connection = crate::acp::connect(

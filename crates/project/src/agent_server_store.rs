@@ -21,7 +21,9 @@ use rpc::{AnyProtoClient, TypedEnvelope, proto};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use settings::{AgentConfigOptionValue, RegisterSetting, SettingsStore, update_settings_file};
+use settings::{
+    AgentConfigOptionValue, RegisterSetting, Settings, SettingsStore, update_settings_file,
+};
 use sha2::{Digest, Sha256};
 use url::Url;
 use util::{ResultExt as _, debug_panic};
@@ -119,6 +121,7 @@ pub trait ExternalAgentServer {
         &mut self,
         extra_args: Vec<String>,
         extra_env: HashMap<String, String>,
+        include_project_environment: bool,
         cx: &mut AsyncApp,
     ) -> Task<Result<AgentServerCommand>>;
 
@@ -689,7 +692,12 @@ impl AgentServerStore {
                 if let Some(loading_status_tx) = loading_status_tx {
                     agent.set_loading_status_tx(loading_status_tx);
                 }
-                anyhow::Ok(agent.get_command(vec![], extra_env, &mut cx.to_async()))
+                anyhow::Ok(agent.get_command(
+                    vec![],
+                    extra_env,
+                    envelope.payload.include_project_environment.unwrap_or(true),
+                    &mut cx.to_async(),
+                ))
             })?
             .await?;
         Ok(proto::AgentServerCommand {
@@ -848,12 +856,16 @@ impl ExternalAgentServer for RemoteExternalAgentServer {
         &mut self,
         extra_args: Vec<String>,
         extra_env: HashMap<String, String>,
+        _include_project_environment: bool,
         cx: &mut AsyncApp,
     ) -> Task<Result<AgentServerCommand>> {
         let project_id = self.project_id;
         let name = self.name.to_string();
         let upstream_client = self.upstream_client.downgrade();
         let worktree_store = self.worktree_store.clone();
+        let include_project_environment = cx.update(|cx| {
+            terminal::terminal_settings::TerminalSettings::get(None, cx).remote_terminal_environment
+        });
         cx.spawn(async move |cx| {
             let root_dir = worktree_store.read_with(cx, |worktree_store, cx| {
                 crate::Project::default_visible_worktree_paths(worktree_store, cx)
@@ -870,6 +882,7 @@ impl ExternalAgentServer for RemoteExternalAgentServer {
                             project_id,
                             name,
                             root_dir,
+                            include_project_environment: Some(include_project_environment),
                         })
                 })?
                 .await?;
@@ -1152,6 +1165,7 @@ impl ExternalAgentServer for LocalRegistryArchiveAgent {
         &mut self,
         extra_args: Vec<String>,
         extra_env: HashMap<String, String>,
+        include_project_environment: bool,
         cx: &mut AsyncApp,
     ) -> Task<Result<AgentServerCommand>> {
         let fs = self.fs.clone();
@@ -1165,12 +1179,16 @@ impl ExternalAgentServer for LocalRegistryArchiveAgent {
         let loading_status_tx = self.loading_status_tx.take();
 
         cx.spawn(async move |cx| {
-            let mut env = project_environment
-                .update(cx, |project_environment, cx| {
-                    project_environment.default_environment(cx)
-                })?
-                .await
-                .unwrap_or_default();
+            let mut env = if include_project_environment {
+                project_environment
+                    .update(cx, |project_environment, cx| {
+                        project_environment.default_environment(cx)
+                    })?
+                    .await
+                    .unwrap_or_default()
+            } else {
+                HashMap::default()
+            };
 
             let dir = installation_dir;
             fs.create_dir(&dir).await?;
@@ -1365,6 +1383,7 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
         &mut self,
         extra_args: Vec<String>,
         extra_env: HashMap<String, String>,
+        include_project_environment: bool,
         cx: &mut AsyncApp,
     ) -> Task<Result<AgentServerCommand>> {
         let fs = self.fs.clone();
@@ -1377,12 +1396,16 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
         let settings_env = self.settings_env.clone();
 
         cx.spawn(async move |cx| {
-            let mut env = project_environment
-                .update(cx, |project_environment, cx| {
-                    project_environment.default_environment(cx)
-                })?
-                .await
-                .unwrap_or_default();
+            let mut env = if include_project_environment {
+                project_environment
+                    .update(cx, |project_environment, cx| {
+                        project_environment.default_environment(cx)
+                    })?
+                    .await
+                    .unwrap_or_default()
+            } else {
+                HashMap::default()
+            };
 
             let install_dir = paths::external_agents_dir()
                 .join("registry")
@@ -1477,17 +1500,22 @@ impl ExternalAgentServer for LocalCustomAgent {
         &mut self,
         extra_args: Vec<String>,
         extra_env: HashMap<String, String>,
+        include_project_environment: bool,
         cx: &mut AsyncApp,
     ) -> Task<Result<AgentServerCommand>> {
         let mut command = self.command.clone();
         let project_environment = self.project_environment.downgrade();
         cx.spawn(async move |cx| {
-            let mut env = project_environment
-                .update(cx, |project_environment, cx| {
-                    project_environment.default_environment(cx)
-                })?
-                .await
-                .unwrap_or_default();
+            let mut env = if include_project_environment {
+                project_environment
+                    .update(cx, |project_environment, cx| {
+                        project_environment.default_environment(cx)
+                    })?
+                    .await
+                    .unwrap_or_default()
+            } else {
+                HashMap::default()
+            };
             env.extend(command.env.unwrap_or_default());
             env.extend(extra_env);
             command.env = Some(env);
@@ -1689,7 +1717,6 @@ mod tests {
     #[cfg(feature = "test-support")]
     use http_client::{AsyncBody, FakeHttpClient, Response};
     use node_runtime::NodeRuntime;
-    use settings::Settings as _;
 
     #[cfg(feature = "test-support")]
     const TEST_ARCHIVE_URL: &str = "https://example.test/agent";
@@ -1811,6 +1838,48 @@ mod tests {
                 cx,
             );
         });
+    }
+
+    #[gpui::test]
+    async fn custom_agent_can_skip_project_environment(cx: &mut TestAppContext) {
+        let mut agent = cx.update(|cx| {
+            let fs: Arc<dyn Fs> = fs::FakeFs::new(cx.background_executor().clone());
+            let worktree_store =
+                cx.new(|cx| WorktreeStore::local(false, fs.clone(), WorktreeIdCounter::get(cx)));
+            let project_environment = cx.new(|cx| {
+                crate::ProjectEnvironment::new(None, worktree_store.downgrade(), None, false, cx)
+            });
+            let mut configured_env = HashMap::default();
+            configured_env.insert("CONFIGURED_VALUE".to_string(), "preserved".to_string());
+            let command = AgentServerCommand {
+                path: PathBuf::from("pi-acp"),
+                args: Vec::new(),
+                env: Some(configured_env),
+            };
+            LocalCustomAgent {
+                project_environment,
+                command,
+            }
+        });
+        let mut extra_env = HashMap::default();
+        extra_env.insert("EXTRA_VALUE".to_string(), "preserved".to_string());
+
+        let command = agent
+            .get_command(Vec::new(), extra_env, false, &mut cx.to_async())
+            .await
+            .expect("custom agent command should be resolved");
+
+        let environment = command
+            .env
+            .expect("agent command should have an environment");
+        assert_eq!(
+            environment.get("CONFIGURED_VALUE").map(String::as_str),
+            Some("preserved")
+        );
+        assert_eq!(
+            environment.get("EXTRA_VALUE").map(String::as_str),
+            Some("preserved")
+        );
     }
 
     fn create_agent_server_store(cx: &mut TestAppContext) -> gpui::Entity<AgentServerStore> {
@@ -2050,8 +2119,9 @@ mod tests {
             http_client,
             Some(expected_sha256.to_string()),
         );
-        let get_command =
-            cx.update(|cx| agent.get_command(Vec::new(), HashMap::default(), &mut cx.to_async()));
+        let get_command = cx.update(|cx| {
+            agent.get_command(Vec::new(), HashMap::default(), true, &mut cx.to_async())
+        });
 
         let error = get_command.await.unwrap_err();
         assert!(
@@ -2086,8 +2156,9 @@ mod tests {
             http_client,
             Some(expected_sha256.clone()),
         );
-        let get_command =
-            cx.update(|cx| agent.get_command(Vec::new(), HashMap::default(), &mut cx.to_async()));
+        let get_command = cx.update(|cx| {
+            agent.get_command(Vec::new(), HashMap::default(), true, &mut cx.to_async())
+        });
 
         let command = get_command.await.unwrap();
         cx.run_until_parked();
@@ -2115,8 +2186,9 @@ mod tests {
         let http_client = static_http_client(contents.to_vec());
         let mut agent =
             make_registry_archive_agent(cx, installation_dir.clone(), http_client, None);
-        let get_command =
-            cx.update(|cx| agent.get_command(Vec::new(), HashMap::default(), &mut cx.to_async()));
+        let get_command = cx.update(|cx| {
+            agent.get_command(Vec::new(), HashMap::default(), true, &mut cx.to_async())
+        });
 
         let command = get_command.await.unwrap();
         cx.run_until_parked();

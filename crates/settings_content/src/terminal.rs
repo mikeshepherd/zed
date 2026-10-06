@@ -22,8 +22,8 @@ pub struct ProjectTerminalSettingsContent {
     ///
     /// Default: {}
     pub env: Option<HashMap<String, String>>,
-    /// Whether to forward the captured project directory environment to remote terminals.
-    /// Disabling this does not affect variables set by `terminal.env` or Zed's terminal variables.
+    /// Whether to forward the captured project directory environment to remote commands, terminals, and agents.
+    /// Disabling this does not affect explicitly configured command environment variables.
     ///
     /// Default: true
     pub remote_terminal_environment: Option<bool>,

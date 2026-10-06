@@ -246,6 +246,7 @@ impl DapStore {
         session_id: SessionId,
         worktree: &Entity<Worktree>,
         console: UnboundedSender<String>,
+        include_project_environment: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<DebugAdapterBinary>> {
         match &self.mode {
@@ -297,7 +298,7 @@ impl DapStore {
                         })?
                         .await;
 
-                    if let Some(mut env) = env {
+                    if include_project_environment && let Some(mut env) = env {
                         env.extend(std::mem::take(&mut binary.envs));
                         binary.envs = env;
                     }
@@ -313,6 +314,10 @@ impl DapStore {
                         project_id: remote.upstream_project_id,
                         worktree_id: worktree.read(cx).id().to_proto(),
                         definition: Some(definition.to_proto()),
+                        include_project_environment: Some(
+                            terminal::terminal_settings::TerminalSettings::get(None, cx)
+                                .remote_terminal_environment,
+                        ),
                     });
                 let remote = remote.remote_client.clone();
 
@@ -527,6 +532,7 @@ impl DapStore {
                             session_id,
                             &worktree,
                             console,
+                            true,
                             cx,
                         )
                     })?
@@ -868,6 +874,7 @@ impl DapStore {
                     SessionId::from_proto(session_id),
                     &worktree,
                     tx,
+                    envelope.payload.include_project_environment.unwrap_or(true),
                     cx,
                 )
             })
