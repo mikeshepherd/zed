@@ -863,10 +863,11 @@ impl ExternalAgentServer for RemoteExternalAgentServer {
         let name = self.name.to_string();
         let upstream_client = self.upstream_client.downgrade();
         let worktree_store = self.worktree_store.clone();
-        let include_project_environment = cx.update(|cx| {
-            terminal::terminal_settings::TerminalSettings::get(None, cx).remote_terminal_environment
-        });
         cx.spawn(async move |cx| {
+            let include_project_environment = cx.update(|cx| {
+                terminal::terminal_settings::TerminalSettings::get(None, cx)
+                    .remote_terminal_environment
+            });
             let root_dir = worktree_store.read_with(cx, |worktree_store, cx| {
                 crate::Project::default_visible_worktree_paths(worktree_store, cx)
                     .into_iter()
