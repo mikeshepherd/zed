@@ -10867,13 +10867,39 @@ pub async fn find_existing_workspace(
     let mut existing: Option<(WindowHandle<MultiWorkspace>, Entity<Workspace>)> = None;
     let mut open_visible = OpenVisible::All;
     let mut best_match = None;
+    let location_identity = |location: &SerializedWorkspaceLocation| match location {
+        SerializedWorkspaceLocation::Local => "local".to_string(),
+        SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Ssh(options)) => format!(
+            "ssh(host={:?}, username={:?}, port={:?})",
+            options.host, options.username, options.port
+        ),
+        SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Wsl(options)) => {
+            format!("wsl(distro={:?})", options.distro_name)
+        }
+        SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Docker(options)) => {
+            format!("docker(container_id={:?})", options.container_id)
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Mock(options)) => {
+            format!("mock(id={})", options.id)
+        }
+    };
 
     if open_options.workspace_matching != WorkspaceMatching::None {
         cx.update(|cx| {
+            log::debug!(
+                target: "workspace_matching",
+                "matching paths={abs_paths:?} mode={:?} requesting_window={:?} wait={} location={}",
+                open_options.workspace_matching,
+                open_options.requesting_window.map(|window| window.window_id().as_u64()),
+                open_options.wait,
+                location_identity(location),
+            );
             for window in workspace_windows_for_location(location, cx) {
                 if let Ok(multi_workspace) = window.read(cx) {
-                    for workspace in multi_workspace.workspaces() {
-                        let project = workspace.read(cx).project.read(cx);
+                    for workspace_handle in multi_workspace.workspaces() {
+                        let workspace = workspace_handle.read(cx);
+                        let project = workspace.project.read(cx);
                         let m = match open_options.workspace_matching {
                             WorkspaceMatching::None => None,
                             WorkspaceMatching::MatchExact => {
@@ -10886,14 +10912,52 @@ pub async fn find_existing_workspace(
                                 project.visibility_for_paths(abs_paths, false, cx)
                             }
                         };
+                        if log::log_enabled!(target: "workspace_matching", log::Level::Debug) {
+                            log::debug!(
+                                target: "workspace_matching",
+                                "candidate window={} workspace_id={:?} active={} location={} path_style={:?} match={m:?} previous_best={best_match:?}",
+                                window.window_id().as_u64(),
+                                workspace.database_id(),
+                                multi_workspace.workspace() == workspace_handle,
+                                match workspace.workspace_location(cx) {
+                                    WorkspaceLocation::Location(location, _) => location_identity(&location),
+                                    WorkspaceLocation::None => "none".to_string(),
+                                },
+                                project.path_style(cx),
+                            );
+                            for worktree in project.worktrees(cx) {
+                                let worktree = worktree.read(cx);
+                                let root = worktree.abs_path();
+                                for path in abs_paths {
+                                    let path = SanitizedPath::new(path);
+                                    let relative_path = project
+                                        .path_style(cx)
+                                        .strip_prefix(path.as_ref(), root.as_ref());
+                                    let ignored = relative_path.as_ref().map(|relative_path| {
+                                        !relative_path.is_empty()
+                                            && worktree.is_path_ignored(relative_path)
+                                    });
+                                    let indexed_as_directory = relative_path
+                                        .as_ref()
+                                        .and_then(|relative_path| worktree.entry_for_path(relative_path))
+                                        .map(|entry| entry.is_dir());
+                                    log::debug!(
+                                        target: "workspace_matching",
+                                        "  path={:?} root={root:?} relative={relative_path:?} visible={} ignored={ignored:?} indexed_as_directory={indexed_as_directory:?}",
+                                        path.as_ref(),
+                                        worktree.is_visible(),
+                                    );
+                                }
+                            }
+                        }
                         if m > best_match {
-                            existing = Some((window, workspace.clone()));
+                            existing = Some((window, workspace_handle.clone()));
                             best_match = m;
                         } else if best_match.is_none()
                             && open_options.workspace_matching
                                 == WorkspaceMatching::MatchSubdirectory
                         {
-                            existing = Some((window, workspace.clone()))
+                            existing = Some((window, workspace_handle.clone()))
                         }
                     }
                 }
@@ -10939,6 +11003,18 @@ pub async fn find_existing_workspace(
                 }
             });
         }
+    }
+    if log::log_enabled!(target: "workspace_matching", log::Level::Debug) {
+        cx.update(|cx| {
+            log::debug!(
+                target: "workspace_matching",
+                "selected={:?} best_match={best_match:?} open_visible={open_visible:?}",
+                existing.as_ref().map(|(window, workspace)| (
+                    window.window_id().as_u64(),
+                    workspace.read(cx).database_id(),
+                )),
+            );
+        });
     }
     (existing, open_visible)
 }
