@@ -3991,6 +3991,7 @@ impl Workspace {
                         OpenOptions {
                             requesting_window,
                             open_mode,
+                            match_only_active_workspaces: true,
                             workspace_matching: if open_mode == OpenMode::NewWindow {
                                 WorkspaceMatching::None
                             } else {
@@ -10855,6 +10856,56 @@ pub fn workspace_windows_for_location(
         .collect()
 }
 
+pub async fn remove_inactive_duplicate_workspaces(
+    target_window: WindowHandle<MultiWorkspace>,
+    target_workspace: &Entity<Workspace>,
+    cx: &mut AsyncApp,
+) -> Result<bool> {
+    let duplicates = cx.update(|cx| {
+        let key = target_workspace.read(cx).project_group_key(cx);
+        if key.path_list().is_empty() {
+            return Vec::new();
+        }
+        cx.windows()
+            .into_iter()
+            .filter_map(|window| {
+                let window = window.downcast::<MultiWorkspace>()?;
+                if window == target_window {
+                    return None;
+                }
+                let multi_workspace = window.read(cx).ok()?;
+                let inactive = multi_workspace
+                    .workspaces()
+                    .filter(|workspace| {
+                        *workspace != multi_workspace.workspace()
+                            && workspace.read(cx).project_group_key(cx) == key
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (!inactive.is_empty()).then_some((window, key.clone(), inactive))
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let mut all_removed = true;
+    for (window, key, inactive) in duplicates {
+        let removed = window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.remove(inactive, RemovalIntent::CloseProject, window, cx)
+            })?
+            .await?;
+        if removed {
+            window.update(cx, |multi_workspace, _, cx| {
+                multi_workspace.remove_project_group_if_empty(&key, cx);
+            })?;
+        } else {
+            all_removed = false;
+            log::info!("Inactive duplicate workspace was kept because closing was cancelled");
+        }
+    }
+    Ok(all_removed)
+}
+
 pub async fn find_existing_workspace(
     abs_paths: &[PathBuf],
     open_options: &OpenOptions,
@@ -10898,6 +10949,12 @@ pub async fn find_existing_workspace(
             for window in workspace_windows_for_location(location, cx) {
                 if let Ok(multi_workspace) = window.read(cx) {
                     for workspace_handle in multi_workspace.workspaces() {
+                        if open_options.match_only_active_workspaces
+                            && Some(window) != open_options.requesting_window
+                            && multi_workspace.workspace() != workspace_handle
+                        {
+                            continue;
+                        }
                         let workspace = workspace_handle.read(cx);
                         let project = workspace.project.read(cx);
                         let m = match open_options.workspace_matching {
@@ -11044,6 +11101,8 @@ pub struct OpenOptions {
     pub visible: Option<OpenVisible>,
     pub focus: Option<bool>,
     pub workspace_matching: WorkspaceMatching,
+    /// Restrict cross-window matching to the displayed workspace of each window.
+    pub match_only_active_workspaces: bool,
     /// Whether to add unmatched directories to the existing window's sidebar
     /// rather than opening a new window. Defaults to true, matching the default
     /// `cli_default_open_behavior` setting.
@@ -11061,6 +11120,7 @@ impl Default for OpenOptions {
             visible: None,
             focus: None,
             workspace_matching: WorkspaceMatching::default(),
+            match_only_active_workspaces: false,
             add_dirs_to_sidebar: true,
             wait: false,
             requesting_window: None,
@@ -11227,7 +11287,11 @@ pub fn open_paths(
 
         // Fallback: if no workspace contains the paths and all paths are files,
         // prefer an existing local workspace window (active window first).
-        if open_options.should_reuse_existing_window() && existing.is_none() {
+        if open_options.should_reuse_existing_window()
+            && existing.is_none()
+            && (!open_options.match_only_active_workspaces
+                || open_options.requesting_window.is_some())
+        {
             let all_paths = abs_paths.iter().map(|path| app_state.fs.metadata(path));
             let all_metadatas = futures::future::join_all(all_paths)
                 .await
@@ -11240,11 +11304,19 @@ pub fn open_paths(
                         &SerializedWorkspaceLocation::Local,
                         cx,
                     );
-                    let window = cx
-                        .active_window()
-                        .and_then(|window| window.downcast::<MultiWorkspace>())
+                    let window = open_options
+                        .requesting_window
                         .filter(|window| windows.contains(window))
-                        .or_else(|| windows.into_iter().next());
+                        .or_else(|| {
+                            if open_options.match_only_active_workspaces {
+                                None
+                            } else {
+                                cx.active_window()
+                                    .and_then(|window| window.downcast::<MultiWorkspace>())
+                                    .filter(|window| windows.contains(window))
+                                    .or_else(|| windows.into_iter().next())
+                            }
+                        });
                     if let Some(window) = window {
                         if let Ok(multi_workspace) = window.read(cx) {
                             let active_workspace = multi_workspace.workspace().clone();
@@ -11266,6 +11338,7 @@ pub fn open_paths(
         if open_options.should_reuse_existing_window()
             && existing.is_none()
             && open_options.requesting_window.is_none()
+            && !open_options.match_only_active_workspaces
         {
             let use_existing_window = open_options.add_dirs_to_sidebar;
 
@@ -11306,6 +11379,7 @@ pub fn open_paths(
         }
 
         let open_in_dev_container = open_options.open_in_dev_container;
+        let match_only_active_workspaces = open_options.match_only_active_workspaces;
 
         let result = if let Some((existing, target_workspace)) = existing {
             let open_task = existing
@@ -11374,6 +11448,12 @@ pub fn open_paths(
 
             result
         };
+
+        if match_only_active_workspaces {
+            if let Ok(ref opened) = result {
+                remove_inactive_duplicate_workspaces(opened.window, &opened.workspace, cx).await?;
+            }
+        }
 
         #[cfg(target_os = "windows")]
         if let Some(util::paths::WslPath{distro, path}) = wsl_path

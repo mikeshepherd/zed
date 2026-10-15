@@ -257,6 +257,7 @@ impl WslOpenModal {
         let open_options = workspace::OpenOptions {
             requesting_window: window.window_handle().downcast::<MultiWorkspace>(),
             open_mode,
+            match_only_active_workspaces: true,
             ..Default::default()
         };
 

@@ -2011,6 +2011,7 @@ impl RemoteServerProjects {
                 app_state,
                 OpenOptions {
                     requesting_window: replace_window,
+                    match_only_active_workspaces: true,
                     ..OpenOptions::default()
                 },
                 cx,
@@ -2299,6 +2300,7 @@ impl RemoteServerProjects {
                 app_state,
                 OpenOptions {
                     requesting_window: replace_window,
+                    match_only_active_workspaces: true,
                     ..OpenOptions::default()
                 },
                 cx,

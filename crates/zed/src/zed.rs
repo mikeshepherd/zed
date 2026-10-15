@@ -2459,6 +2459,7 @@ pub fn open_new_ssh_project_from_project(
             workspace::OpenOptions {
                 workspace_matching: workspace::WorkspaceMatching::None,
                 requesting_window,
+                match_only_active_workspaces: true,
                 ..Default::default()
             },
             cx,

@@ -200,6 +200,14 @@ pub async fn open_remote_project(
                 .map(|r| r.and_then(|r| r.ok()))
                 .collect::<Vec<_>>();
             navigate_to_positions(&existing_window, items, &paths_with_positions, cx);
+            if open_options.match_only_active_workspaces {
+                workspace::remove_inactive_duplicate_workspaces(
+                    existing_window,
+                    &existing_workspace,
+                    cx,
+                )
+                .await?;
+            }
             log::debug!(
                 "Open remote project: reusing matched window={}",
                 existing_window.window_id().as_u64(),
@@ -261,6 +269,29 @@ pub async fn open_remote_project(
         "Open remote project: connecting in window={} newly_created={created_new_window}",
         window.window_id().as_u64(),
     );
+
+    if open_options.match_only_active_workspaces {
+        let (inactive_match, _) = find_existing_workspace(
+            &paths,
+            &OpenOptions {
+                match_only_active_workspaces: false,
+                ..open_options.clone()
+            },
+            &SerializedWorkspaceLocation::Remote(connection_options.clone()),
+            cx,
+        )
+        .await;
+        if let Some((other_window, inactive_workspace)) = inactive_match
+            && other_window != window
+            && other_window.read_with(cx, |multi_workspace, _| {
+                multi_workspace.workspace() != &inactive_workspace
+            })?
+            && !workspace::remove_inactive_duplicate_workspaces(window, &inactive_workspace, cx)
+                .await?
+        {
+            anyhow::bail!("Cannot open remote project while its inactive workspace is still open");
+        }
+    }
 
     loop {
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
@@ -428,8 +459,13 @@ pub async fn open_remote_project(
                 });
             }
 
-            Ok((_, items)) => {
+            Ok((workspace, items)) => {
                 navigate_to_positions(&window, items, &paths_with_positions, cx);
+                if open_options.match_only_active_workspaces
+                    && let Some(workspace) = workspace
+                {
+                    workspace::remove_inactive_duplicate_workspaces(window, &workspace, cx).await?;
+                }
             }
         }
 
@@ -926,7 +962,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_remote_open_prefers_matching_workspace_over_requested_window(
+    async fn test_remote_open_reuses_active_workspace_in_another_window(
         cx: &mut TestAppContext,
         server_cx: &mut TestAppContext,
     ) {
@@ -975,6 +1011,7 @@ mod tests {
             app_state,
             OpenOptions {
                 requesting_window: Some(empty_window),
+                match_only_active_workspaces: true,
                 ..Default::default()
             },
             &mut async_cx,
@@ -983,6 +1020,129 @@ mod tests {
         .expect("reopening the original remote project should succeed");
         assert_eq!(opened_window, original_window);
         assert_ne!(opened_window, empty_window);
+    }
+
+    #[gpui::test]
+    async fn test_remote_open_ignores_and_removes_inactive_workspace_in_another_window(
+        cx: &mut TestAppContext,
+        server_cx: &mut TestAppContext,
+    ) {
+        let (app_state, connection, _headless) = init_sibling_remote_projects(cx, server_cx).await;
+        let path = PathBuf::from(path!("/projects/zed"));
+        let mut async_cx = cx.to_async();
+        let original_window = open_remote_project(
+            connection.clone(),
+            vec![path.clone()],
+            app_state.clone(),
+            OpenOptions::default(),
+            &mut async_cx,
+        )
+        .await
+        .expect("remote project should open");
+        cx.executor().run_until_parked();
+        let original_workspace = original_window
+            .read_with(cx, |multi_workspace, _| multi_workspace.workspace().clone())
+            .expect("original window should exist");
+
+        app_state
+            .fs
+            .as_fake()
+            .insert_tree(path!("/local-project"), json!({ "main.rs": "" }))
+            .await;
+        let local_project = cx
+            .update(|cx| {
+                workspace::open_paths(
+                    &[PathBuf::from(path!("/local-project"))],
+                    app_state.clone(),
+                    OpenOptions {
+                        workspace_matching: workspace::WorkspaceMatching::None,
+                        requesting_window: Some(original_window),
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            })
+            .await
+            .expect("local project should open in the original window");
+        assert_eq!(local_project.window, original_window);
+        original_window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.add(original_workspace.clone(), window, cx);
+                assert_ne!(multi_workspace.workspace(), &original_workspace);
+            })
+            .expect("original window should exist");
+
+        let empty_window = cx
+            .update(|cx| {
+                Workspace::new_local(
+                    Vec::new(),
+                    app_state.clone(),
+                    None,
+                    None,
+                    None,
+                    workspace::OpenMode::NewWindow,
+                    cx,
+                )
+            })
+            .await
+            .expect("empty window should open")
+            .window;
+        let location = SerializedWorkspaceLocation::Remote(connection.clone());
+        let (cli_match, _) = find_existing_workspace(
+            &[path.clone()],
+            &OpenOptions::default(),
+            &location,
+            &mut async_cx,
+        )
+        .await;
+        assert_eq!(cli_match.map(|(window, _)| window), Some(original_window));
+        let (existing, _) = find_existing_workspace(
+            &[path.clone()],
+            &OpenOptions {
+                match_only_active_workspaces: true,
+                ..Default::default()
+            },
+            &location,
+            &mut async_cx,
+        )
+        .await;
+        assert!(
+            existing.is_none(),
+            "inactive remote workspace must not select its window"
+        );
+        let original_workspace_id = original_workspace.entity_id();
+        let original_group_key = cx.update(|cx| original_workspace.read(cx).project_group_key(cx));
+        drop(original_workspace);
+
+        let opened_window = open_remote_project(
+            connection,
+            vec![path],
+            app_state,
+            OpenOptions {
+                requesting_window: Some(empty_window),
+                match_only_active_workspaces: true,
+                ..Default::default()
+            },
+            &mut async_cx,
+        )
+        .await
+        .expect("remote project should open in the empty window");
+        assert_eq!(opened_window, empty_window);
+        original_window
+            .read_with(cx, |multi_workspace, _| {
+                assert_eq!(multi_workspace.workspace(), &local_project.workspace);
+                assert!(
+                    !multi_workspace
+                        .workspaces()
+                        .any(|workspace| workspace.entity_id() == original_workspace_id)
+                );
+                assert!(
+                    !multi_workspace
+                        .project_group_keys()
+                        .contains(&original_group_key)
+                );
+            })
+            .expect("original window should still exist");
     }
 
     #[gpui::test]

@@ -337,6 +337,7 @@ pub fn init(cx: &mut App) {
 
                     let open_options = workspace::OpenOptions {
                         requesting_window,
+                        match_only_active_workspaces: true,
                         ..Default::default()
                     };
 
@@ -399,6 +400,7 @@ pub fn init(cx: &mut App) {
                 };
             let open_options = OpenOptions {
                 requesting_window,
+                match_only_active_workspaces: true,
                 ..Default::default()
             };
 
@@ -2197,6 +2199,7 @@ impl RecentProjectsDelegate {
                     };
                     let open_options = OpenOptions {
                         requesting_window: replace_window,
+                        match_only_active_workspaces: true,
                         ..Default::default()
                     };
                     if let RemoteConnectionOptions::Ssh(connection) = &mut connection {

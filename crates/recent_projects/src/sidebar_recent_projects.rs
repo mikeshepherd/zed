@@ -256,6 +256,7 @@ impl PickerDelegate for SidebarRecentProjectsDelegate {
                     let replace_window = window.window_handle().downcast::<MultiWorkspace>();
                     let open_options = OpenOptions {
                         requesting_window: replace_window,
+                        match_only_active_workspaces: true,
                         ..Default::default()
                     };
                     if let RemoteConnectionOptions::Ssh(connection) = &mut connection {

@@ -317,6 +317,120 @@ async fn test_open_new_window_does_not_open_sidebar_on_existing_window(cx: &mut 
 }
 
 #[gpui::test]
+async fn test_editor_open_ignores_and_removes_inactive_workspace_in_another_window(
+    cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    let app_state = cx.update(AppState::test);
+    let fs = app_state.fs.as_fake();
+    fs.insert_tree(path!("/project_a"), json!({ "file.txt": "" }))
+        .await;
+    fs.insert_tree(path!("/project_b"), json!({ "file.txt": "" }))
+        .await;
+
+    let original = cx
+        .update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project_a"))],
+                app_state.clone(),
+                OpenOptions::default(),
+                cx,
+            )
+        })
+        .await
+        .expect("first project should open");
+    let original_window = original.window;
+    let original_workspace = original.workspace;
+
+    cx.update(|cx| {
+        open_paths(
+            &[PathBuf::from(path!("/project_b"))],
+            app_state.clone(),
+            OpenOptions::default(),
+            cx,
+        )
+    })
+    .await
+    .expect("second project should open");
+    original_window
+        .read_with(cx, |multi_workspace, _| {
+            assert_ne!(multi_workspace.workspace(), &original_workspace);
+            assert!(
+                multi_workspace
+                    .workspaces()
+                    .any(|workspace| workspace == &original_workspace)
+            );
+        })
+        .expect("original window should exist");
+
+    let empty = cx
+        .update(|cx| {
+            open_paths(
+                &[],
+                app_state.clone(),
+                OpenOptions {
+                    workspace_matching: WorkspaceMatching::None,
+                    open_mode: OpenMode::NewWindow,
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .expect("empty window should open");
+    assert_ne!(empty.window, original_window);
+
+    let options = OpenOptions {
+        requesting_window: Some(empty.window),
+        match_only_active_workspaces: true,
+        ..Default::default()
+    };
+    let opened = cx
+        .update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project_a"))],
+                app_state.clone(),
+                options.clone(),
+                cx,
+            )
+        })
+        .await
+        .expect("project should open in the requested window");
+    assert_eq!(opened.window, empty.window);
+    original_window
+        .read_with(cx, |multi_workspace, cx| {
+            assert!(
+                !multi_workspace
+                    .workspaces()
+                    .any(|workspace| workspace == &original_workspace)
+            );
+            assert!(
+                !multi_workspace
+                    .project_group_keys()
+                    .contains(&original_workspace.read(cx).project_group_key(cx))
+            );
+        })
+        .expect("original window should exist");
+
+    let reopened = cx
+        .update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/project_a/file.txt"))],
+                app_state,
+                OpenOptions {
+                    match_only_active_workspaces: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .expect("file should open in the active matching project");
+    assert_eq!(reopened.window, empty.window);
+}
+
+#[gpui::test]
 async fn test_open_directory_in_existing_window_opens_sidebar(cx: &mut TestAppContext) {
     init_test(cx);
 

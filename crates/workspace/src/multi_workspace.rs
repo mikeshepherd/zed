@@ -977,6 +977,22 @@ impl MultiWorkspace {
             .collect()
     }
 
+    pub fn remove_project_group_if_empty(&mut self, key: &ProjectGroupKey, cx: &mut Context<Self>) {
+        if self
+            .workspaces()
+            .any(|workspace| workspace.read(cx).project_group_key(cx) == *key)
+        {
+            return;
+        }
+        let previous_count = self.project_groups.len();
+        self.project_groups.retain(|group| group.key != *key);
+        if self.project_groups.len() != previous_count {
+            cx.emit(MultiWorkspaceEvent::ProjectGroupsChanged);
+            self.serialize(cx);
+            cx.notify();
+        }
+    }
+
     pub fn remove_project_group(
         &mut self,
         group_key: &ProjectGroupKey,
@@ -2002,6 +2018,12 @@ impl MultiWorkspace {
                             this.detach_workspace(&empty_workspace, cx);
                         }
                     })?;
+                }
+
+                let target_window = cx.window_handle().downcast::<MultiWorkspace>();
+                if let Some(target_window) = target_window {
+                    crate::remove_inactive_duplicate_workspaces(target_window, &new_workspace, cx)
+                        .await?;
                 }
 
                 Ok(new_workspace)
